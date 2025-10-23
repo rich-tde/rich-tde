@@ -8,10 +8,11 @@
 #SBATCH --nodes=1   # max 2 nodes for gpu_strw
 #SBATCH --ntasks=1	# max 24 per node for gpu_strw
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=60G	# max 61G per node for gpu_strw
+#SBATCH --mem=30G	# max 61G per node for gpu_strw
 #SBATCH --mail-user="yujiehe@strw.leidenuniv.nl"
 #SBATCH --mail-type="ALL"
 
+conda init
 conda activate richanalysis
 
 # Run sim

@@ -10,21 +10,10 @@ richio.plots.use_nice_style()
 
  
 # Load the data
-
-
-path = '/data1/projects/pi-rossiem/TDE_data/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_76'
-
-
+path = '/data1/projects/pi-rossiem/TDE_data/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_118'
 snap = richio.load(path)
 
-
-snap.keys()
-
-
-# Take a look at the data
-print('Total number of particles in the snapshot:', len(snap))
-# print('Number of cpus used for the run:', snap.rank)
-
+print(snap.snapnum)
 
 # Fetch the data points, downsampled
 f = snap['Den']
@@ -33,45 +22,20 @@ y = snap['CMy']
 z = snap['CMz']
 # star = snap['tracers/Star']
 
+print('Total number of particles in the snapshot:', len(f))
 
+# mask
 mask = snap.star_ratio_filter()
 mask = mask
 
 f[~mask] = 0            # set density to zero
+f[f<1e-19] = 0          # set near zero values to zero
 
 
 len(f)
 
 
 snap['box']
-
-
-import matplotlib.pyplot as plt
-plt.scatter(x=x, y=y, c=np.log10(f.in_cgs()), s=0.001)
-plt.xlabel('X')
-plt.ylabel('Y')
-plt.xlim(snap['box'][0], snap['box'][3])
-plt.ylim(snap['box'][1], snap['box'][4])
-plt.colorbar()
-plt.show()
-
-
-# plt.scatter(x=x, y=z, c=np.log10(f), s=0.001)
-# plt.xlabel('X')
-# plt.ylabel('Z')
-# plt.xlim(snap['box'][0], snap['box'][3])
-# plt.ylim(snap['box'][2], snap['box'][5])
-# plt.colorbar(label='$\\log(\\rho)$')
-# plt.show()
-
-
-# plt.scatter(x=y, y=z, c=np.log10(f), s=0.001)
-# plt.xlabel('Y')
-# plt.ylabel('Z')
-# plt.xlim(snap['box'][1], snap['box'][4])
-# plt.ylim(snap['box'][2], snap['box'][5])
-# plt.colorbar(label='log(density)')
-# plt.show()
 
  
 # ## Nearest Neighbor Interpolation
@@ -209,19 +173,22 @@ grid_f = f[i]
 
 import matplotlib.pyplot as plt
 
+# slice
+fig = plt.figure()
 xlinspace = np.linspace(snap['box'][0], snap['box'][3], res)
 ylinspace = np.linspace(snap['box'][1], snap['box'][4], res)
 xx, yy = np.meshgrid(xlinspace, ylinspace, indexing='ij')
 plt.pcolormesh(xx, yy, np.log10(grid_f[:, :, 256].in_cgs()))
-plt.colorbar(label=f"log(density/{grid_f.in_cgs().units})", extend='min')
-plt.savefig('/home/hey4/rich_tde/reports/figures/slice_kdtree.png', dpi=300, bbox_inches='tight')
-plt.show()
+plt.colorbar(label=f"log(density/{grid_f.in_cgs().units})")
+plt.savefig(f'/home/hey4/rich_tde/reports/figures/slice_kdtree_{snap.snapnum}.png', dpi=300, bbox_inches='tight')
+
 
 # Projection
+fig = plt.figure()
 dz = (z1 - z0)/res
 plt.pcolormesh(xx, yy, 
     np.log10(np.sum(grid_f*dz, axis=-1).in_cgs()),
     )
 plt.colorbar(label=f"log(column density/{(grid_f*dz).in_cgs().units})")
-plt.savefig('/home/hey4/rich_tde/reports/figures/projection_kdtree.png', dpi=300, bbox_inches='tight')
-plt.show()
+plt.savefig(f'/home/hey4/rich_tde/reports/figures/projection_kdtree_{snap.snapnum}.png', dpi=300, bbox_inches='tight')
+

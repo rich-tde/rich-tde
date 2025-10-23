@@ -1,18 +1,17 @@
-
-import importlib.resources as pkg_resources
-import warnings
+from importlib.resources import files
 from typing import Any
+import warnings
 
+from matplotlib.colors import Colormap
 import matplotlib.pyplot as plt
-import typer
-import unyt as u
 import numpy as np
-
-import richio.styles
+from numpy.typing import ArrayLike
+import unyt as u
 
 # from richio.config import FIGURES_DIR, PROCESSED_DATA_DIR
 
-app = typer.Typer()
+# import typer
+# app = typer.Typer()
 
 # @app.command()
 # def main(
@@ -30,90 +29,115 @@ app = typer.Typer()
 #     # -----------------------------------------
 
 
-
 # if __name__ == "__main__":
 #     app()
 
 
 def use_nice_style():
-    with pkg_resources.path(richio.styles, "nice.mplstyle") as style_path:
-        plt.style.use(style_path)
+    style_path = files("richio.styles").joinpath("nice.mplstyle")
+    plt.style.use(style_path)
 
 
-class SnapshotPlotter():
-
+class SnapshotPlotter:
     def __init__(self, snap):
-
-        self.data = snap
-        self.peek = self.scatter        # alias for peek
+        self.snap = snap
+        self.peek = self.scatter  # alias for peek
 
     def scatter(self):
         pass
 
-    def slice(self,
-              data,
-              ax=None,
-              x='X',
-              y='Y',
-              res=512,
-              method='scatter',
-              **kwargs):
+    def slice(self, data, ax=None, x="X", y="Y", res=512, method="scatter", **kwargs):
         pass
-        
 
-    def projection(self, 
-                   data : str | u.unyt_array | np.ndarray, 
-                   ax : Any | None = None, 
-                   x : str | np.ndarray = 'X', 
-                   y : str | np.ndarray = 'Y', 
-                   res : Any | None = ...,
-                   weights : str | u.unyt_array = 'volume',
-                   method : str = 'hist',
-                   **kwargs):
+    # TODO extract to a new function
+    def projection(
+        self,
+        data: str | ArrayLike,
+        res: int | ArrayLike,
+        x: str | ArrayLike = "X",
+        y: str | ArrayLike = "Y",
+        z: str | ArrayLike = "Z",
+        ax: Any | None = None,
+        unit_system: str = "cgs",
+        box_size: ArrayLike | None = None,
+        cmap: str | Colormap = "twilight",  # default to twilight, because it looks nice
+        star_mask: bool = True,
+        **kwargs,
+    ):
         """
-        Make a projection plot.
+        Make a projection plot. To make use of the unit system, use either str
+        keys or unyt_array data for `data`, `x`, `y`, `z`, `box_size`.
         """
-        if type(data) == str:
+        from scipy.spatial import KDTree
+
+        # Fetch data
+        data = self._get_data(data)
+        x = self._get_data(x)
+        y = self._get_data(y)
+        z = self._get_data(z)
+
+        # Set boxsize
+        if box_size is None:
+            x0, y0, z0, x1, y1, z1 = self.snap.box  # Load the box size
+        else:
+            x0, y0, z0, x1, y1, z1 = box_size
+
+        # Set resolution
+        try:
+            nx, ny, nz = res[0], res[1], res[2]
+        except TypeError:
+            nx = ny = nz = res
+
+        # Make Euclidean grid
+        xspace = np.linspace(
+            x0, x1, nx, endpoint=False
+        )  # disable endpoints such that dz = (z1-z0)/res instead of (z1-z0)/(res-1)
+        yspace = np.linspace(y0, y1, ny, endpoint=False)
+        zspace = np.linspace(z0, z1, nz, endpoint=False)  # TODO: add an option to use np.geomspace
+
+        X, Y, Z = np.meshgrid(
+            xspace, yspace, zspace, indexing="ij"
+        )  # make the grid for interpolation
+
+        coords = np.stack([x, y, z], axis=-1)  # coordinates of the particles
+        grid_coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the grid (query points)
+
+        tree = KDTree(coords)  # build tree
+        d, i = tree.query(
+            grid_coords, k=1, eps=0.0, p=2, workers=1
+        )  # the most time-consuming step        # TODO: allow increased workers for parallel processing
+
+        grid_data = data[i]
+
+        dz = (z1 - z0) / nz
+        projected_data = np.sum(grid_data * dz, axis=-1).in_base(unit_system)
+
+        if ax is None:
+            fig, ax = plt.subplots()
+
+        # Plot
+        xx, yy = np.meshgrid(xspace, yspace, indexing="ij")
+        im = ax.pcolormesh(xx, yy, np.log10(projected_data), cmap=cmap, **kwargs)
+        unit_latex = projected_data.units.latex_repr
+        plt.colorbar(im, ax=ax, label=f"$\\log(\\Sigma/{unit_latex})$")
+
+        return ax, projected_data
+
+    def _get_data(
+        self, data: str | ArrayLike
+    ) -> u.unyt_array:  # TODO: add masking option that automatically mask floor gas
+        if isinstance(data, str):
             key = data
             data = self.snap[key]
-        elif type(data) == u.unyt_array:
+        elif isinstance(data, u.unyt_array):
             pass
-        elif type(data) == np.ndarray:
+        elif isinstance(data, np.ndarray):
             data = data * u.Dimensionless
             warnings.warn("No unit attached, assuming data is dimensionless.")
         else:
-            raise TypeError(f"Data type {type(data)} unsupported."
-                            "Use either str, unyt.unyt_array, or numpy.ndarray.")
-        
+            raise TypeError(
+                f"Data type {type(data)} unsupported."
+                "Use either str, unyt.unyt_array, or numpy.ndarray."
+            )
 
-        # Load coordinates
-        if type(x) == str:
-            x = self.snap[x]
-        elif type(x) != u.unyt_array:
-            raise TypeError(f"Data type for coordinates {type(data)} unsupported."
-                            "Need unyt_array or str (column name).")
-
-
-        # Volume or mass weighted or else
-        if type(weights) == str:
-            weights = self.snap[weights]
-        elif type(x) != u.unyt_array:
-            raise TypeError(f"Data type for weights {type(weights)} unsupported."
-                            "Need unyt_array or str (column name).")
-
-
-        # Calculate projection
-        method_supported = ['hist']
-        if method == method_supported[0]:
-            H, xedges, yedges = np.histogram2d(x=x, y=y, bins=res, weights=data, density=False)
-            X, Y = np.meshgrid(xedges[:-1], yedges[:-1], indexing='ij')
-            ax.pcolormesh(X, Y, H, **kwargs)
-        else:
-            raise ValueError(f"method={method} is not supported."
-                             "Currently supported: {method_supported}.")
-
-
-        return ax        
-
-    def slice():
-        pass
+        return data
