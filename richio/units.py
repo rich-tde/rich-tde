@@ -99,7 +99,7 @@ class Units:
                 "Rad": self._unit_per_field["Erad"],
                 "Star": self._unit_per_field["tracers/Star"],
                 "T": self._unit_per_field["Temperature"],
-                "tfb": self._unit_per_field["Time"],
+                "tfb": 2.577726*u.day,  # fallback time for Mbh=10^4, Mstar=0.5, Rstar=0.47 temporary patch #TODO: think of a better solution...
                 "Vol": self._unit_per_field["Volume"],
                 "DivV": self._unit_per_field["divV"],
             }
@@ -118,7 +118,7 @@ class Units:
             return unit
 
         else:
-            raise ValueError(f"Unknown key '{key}'. Available keys: {list(self._unit_per_field)}")
+            raise ValueError(f"Unknown key '{key}'. Supported keys: {list(self._unit_per_field)}")
 
 
 # Singleton instance for convenience

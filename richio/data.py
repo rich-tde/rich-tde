@@ -6,10 +6,12 @@ By: Yujie He
 
 import os
 import re
+import warnings
 
 import h5py
 import numpy as np
 import unyt as u
+from numpy.typing import ArrayLike
 
 from richio.plots import SnapshotPlotter
 from richio.units import units
@@ -50,7 +52,7 @@ class Snapshot:
         if match:
             return int(match.group(1))
         else:
-            raise UserWarning(f"No snapshot number found in path: {self.path}")
+            warnings.warn(f"No snapshot number found in path: {self.path}")
             return -1
 
     @classmethod
@@ -201,9 +203,221 @@ class Snapshot:
         print("=" * 100)
 
 
+    def _get_data(
+        self, data: str | ArrayLike
+        ) -> u.unyt_array:
+        if isinstance(data, str):
+            key = data
+            data = self[key]
+        elif isinstance(data, u.unyt_array):
+            pass
+        elif isinstance(data, np.ndarray):
+            data = data * u.Dimensionless
+            warnings.warn("No unit attached, assuming data is dimensionless.")
+        else:
+            raise TypeError(
+                f"Data type {type(data)} unsupported."
+                "Use either str, unyt.unyt_array, or numpy.ndarray."
+            )
+
+        return data
+
+
+    def project(
+        self,
+        data: str | ArrayLike,
+        res: int | ArrayLike,
+        x: str | ArrayLike = "X",
+        y: str | ArrayLike = "Y",
+        z: str | ArrayLike = "Z",
+        box_size: ArrayLike | None = None,
+        unit_system: str = "cgs",
+        selection: ArrayLike = None,
+    ):
+        """
+        Calculate a quantity, interpolate on grid, and integrate along z axis.
+        To make use of the unit system, use either str keys or unyt_array data
+        for `data`, `x`, `y`, `z`, `box_size`.
+        """
+        grid_data, i, xspace, yspace, zspace = self.to_grid(data, res + 1, 
+                x, y, z, box_size, unit_system, selection, endpoint=True)
+
+        dz = zspace[1:] - zspace[:-1]                                                 #PM: dz = (z1 - z0) / (nz - 1)
+        projected_data = np.sum(grid_data[:-1, :-1, :-1] * dz, axis=-1).in_base(unit_system)#PM: grid_data[:, :, :-1]
+
+        return projected_data, xspace, yspace
+
+
+
+    def to_grid(
+        self,
+        data: str | ArrayLike,
+        res: int | ArrayLike,
+        x: str | ArrayLike = "X",
+        y: str | ArrayLike = "Y",
+        z: str | ArrayLike = "Z",
+        box_size: ArrayLike | None = None,
+        unit_system: str = "cgs",
+        selection: ArrayLike = None,
+        endpoint: bool = False,
+    ):
+        """
+        Interpolate to a fixed grid.
+        """
+        # Fetch data
+        data = self._get_data(data)
+        x = self._get_data(x)
+        y = self._get_data(y)
+        z = self._get_data(z)
+
+        # Select cells
+        if selection is not None:
+            data = data[selection]
+            x = x[selection]
+            y = y[selection]
+            z = z[selection]
+
+        # Set boxsize
+        if box_size is None:
+            x0, y0, z0, x1, y1, z1 = self.box  # Load the box size
+        else:
+            x0, y0, z0, x1, y1, z1 = box_size
+
+            # Assign default unit if not provided
+            for l in [x0, y0, z0, x1, y1, z1]:
+                if isinstance(l, u.unyt_quantity):
+                    continue
+                else:
+                    l = l * units.lscale
+
+        # Set resolution
+        try:
+            nx, ny, nz = res[0], res[1], res[2]
+        except TypeError:
+            nx = ny = nz = res
+
+        # Make Euclidean grid
+        xspace = np.linspace(x0, x1, nx, endpoint=endpoint)  # disable endpoints such that dz = (z1-z0)/res instead of (z1-z0)/(res-1)
+        yspace = np.linspace(y0, y1, ny, endpoint=endpoint)                                                #PM: endpoint=True
+        zspace = np.linspace(z0, z1, nz, endpoint=endpoint)  # TODO: add an option to use np.geomspace
+
+        X, Y, Z = np.meshgrid(xspace, yspace, zspace, indexing="ij")
+
+        coords = np.stack([x, y, z], axis=-1)  # coordinates of the particles
+        grid_coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the grid (query points)
+
+        i = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
+
+        grid_data = data[i]
+
+        return grid_data, i, xspace, yspace, zspace
+
+
+
+    def slice(
+        self, 
+        data: str | ArrayLike, 
+        res: int | ArrayLike, 
+        x: str | ArrayLike = "X", 
+        y: str | ArrayLike = "Y", 
+        z: str | ArrayLike = "Z",
+        plane: str = "xy",
+        slice_coord: float | u.array.unyt_quantity | None = None,
+        box_size: ArrayLike | None = None,
+        selection: ArrayLike | None = None,
+        unit_system: str = "cgs",
+        volume_selection: bool = True, # select based on volume to speed up calculation
+    ):
+        """
+        Make a slice. 
+        """
+        # TODO: implement star_mask : put data to zero instead of removing them
+        # (which is bad if you use nn) and put them to the lowest color in
+        # colormap when plotting (something like set_bad...)
+
+        # Fetch data
+        data = self._get_data(data)
+        x = self._get_data(x)
+        y = self._get_data(y)
+        z = self._get_data(z)
+
+        if volume_selection:
+            volume = self._get_data('volume')
+
+        if selection is not None:
+            data = data[selection]
+            x = x[selection]
+            y = y[selection]
+            z = z[selection]
+            if volume_selection:
+                volume = volume[selection]
+
+        # Set resolution
+        try:
+            nx, ny = res[0], res[1]
+        except TypeError:
+            nx = ny = res
+
+        # Set boxsize
+        if box_size is None:
+            x0, y0, z0, x1, y1, z1 = self.box  # Load the box size
+            x0, y0, z0 = _parse_plane(plane, x0, y0, z0)
+            x1, y1, z1 = _parse_plane(plane, x1, y1, z1)
+        else:
+            if isinstance(box_size, u.unyt_array):
+                pass
+            else:
+                box_size *= units.lscale
+
+            if len(box_size) == 6:
+                x0, y0, z0, x1, y1, z1 = box_size       # A 3d box
+                x0, y0, z0 = _parse_plane(plane, x0, y0, z0)
+                x1, y1, z1 = _parse_plane(plane, x1, y1, z1)
+            elif len(box_size) == 4:
+                x0, y0, x1, y1 = box_size
+
+        # Select only cells in proximity
+        if volume_selection:
+            mask = np.abs(z - slice_coord) < volume**(1/3)
+            # assuming spherical cells, V^(1/3)=(4pi/3)^(1/3)R ~ 1.6R, we don't
+            # include the factor such that if V is not round enough we won't
+            # lose too much accuracy
+            data = data[mask]
+            x = x[mask]
+            y = y[mask]
+            z = z[mask]
+
+        # x_slice, y_slice, z_slice should only have one that is not None
+        x, y, z = _parse_plane(plane, x, y, z)      # redefine x y to be the plane, z the sliced direction
+
+        # Assign code unit if slice_coord doesn't have a unit
+        if isinstance(slice_coord, u.unyt_quantity):
+            pass
+        else:
+            slice_coord *= units.lscale
+
+        # Make Euclidean grid
+        xspace = np.linspace(x0, x1, nx, endpoint=False)
+        yspace = np.linspace(y0, y1, ny, endpoint=False)
+        zspace = slice_coord
+
+        X, Y, Z = np.meshgrid(xspace, yspace, zspace, indexing="ij")
+
+        coords = np.stack([x, y, z], axis=-1)  # coordinates of the particles 
+        grid_coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the grid (query points)
+        grid_coords = np.squeeze(grid_coords)            # remove extra dimension (nx, ny, 1, 3) to (nx, ny, 3)
+
+        i = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
+
+        sliced_data = data[i]
+        sliced_data = sliced_data.in_base(unit_system)
+
+        return sliced_data, xspace, yspace
+
+
 class SnapshotH5(
     Snapshot
-):  # TODO one class for direct output, one for merged, one for Paola/Konstantinos style npy dir
+):
     _field_aliases = {
         # Positions
         "X": ["position_x", "pos_x", "x", "particle_position_x"],
@@ -229,11 +443,11 @@ class SnapshotH5(
         "Temperature": ["temperature", "T", "temp"],
         "InternalEnergy": ["internal_energy", "IE", "specific_internal_energy", "sie"],
         "tracers/Entropy": ["entropy", "Entropy", "S"],
-        "Dissipation": ["dissipation", "Diss"],
+        "Dissipation": ["dissipation", "Diss", "dissipation_rate"],
         # Volume
         "Volume": ["volume", "Vol", "volumes"],
         # Radiation
-        "Erad": ["radiation_energy", "Rad", "E_rad"],
+        "Erad": ["radiation_energy", "Rad", "E_rad", "Erad"],
         # Gradients - Pressure
         "DpDx": ["pressure_gradient_x", "grad_p_x", "dp_dx"],
         "DpDy": ["pressure_gradient_y", "grad_p_y", "dp_dy"],
@@ -271,14 +485,16 @@ class SnapshotH5(
     def _get_rank(self) -> int:
         """
         Get the number of ranks.
+        
+        If ran on single core this should return 1, as no 'rank' group is found
         """
         with h5py.File(self.path, "r") as f:
             maxrank = 0
             for key in f.keys():
-                if key[:4] == "rank":
+                if "rank" in key:
                     rank = int(key[4:])
                     if maxrank < rank:
-                        maxrank = rank
+                        maxrank = rank # get the max rank
 
         maxrank += 1  # number of rank (starts from 1) is max rank (starts from 0) + 1
         return maxrank
@@ -299,6 +515,7 @@ class SnapshotH5(
 
         with h5py.File(self.path, "r") as f:
             try:
+                # print(field)
                 arr = np.concatenate([f[f"rank{i}/{field}"] for i in range(self.rank)])
                 arr *= units.get_unit(field)
             except KeyError:  # If field is not under rank, try on the root order
@@ -320,16 +537,31 @@ class SnapshotH5(
         return np
 
     def keys(self) -> list:  # Update this to recursively list all datasets
-        with h5py.File(self.path, "r") as f:
-            keys = []
-            for key in list(f.keys()):  # keys that are not in the ranks, usually 'Time', 'Box'
-                if key.startswith("rank"):
-                    continue
+        """
+        List all keys that a dataset have, omit the "rank0" prefix.
+        """
+        def _list_group(f, keys, prefix="") -> list:
+
+            # recursively list all datasets
+            for key in list(f.keys()):
+
+                if prefix == "":
+                    full_key = key
                 else:
-                    keys.append(key)
+                    full_key = prefix + "/" + key
 
-            keys += list(f["rank0"].keys())  # append keys under the ranks
+                if isinstance(f[key], h5py._hl.dataset.Dataset):
+                    key_norank = re.sub(r"rank\d+/", "", full_key) # match and remove the 'rank<number>/' prefix
+                    if key_norank not in keys:
+                        keys.append(key_norank)
+                elif isinstance(f[key], h5py._hl.group.Group):
+                    _list_group(f[key], keys, prefix=full_key)
 
+            return 0
+
+        keys = []
+        with h5py.File(self.path, "r") as f:
+            _list_group(f, keys=keys)
         keys.sort()
 
         return keys
@@ -382,11 +614,11 @@ class SnapshotNPY(Snapshot):
     _alias_to_canonical = {}
 
     def __init__(self, path):
-        self.path = path  # TODO: rewrite with Path
+        self.path = path  # TODO: rewrite with Path?
 
         super().__init__(path)
 
-    def keys(self) -> list:  # TODO: rewrite this with re
+    def keys(self) -> list:  # TODO: rewrite this with re?
         keys = []
         files = os.listdir(
             self.path
@@ -444,3 +676,47 @@ class SnapshotNPY(Snapshot):
             length = len(self[key])
             break
         return length
+
+
+
+
+def _parse_plane(plane, x, y, z):
+    """
+    Parse a string input "xy" to data x, y, z; "yz" to y, z, x; "zx" to z, x, y,
+    etc, in order to specify the slicing plane.
+    """
+
+    def _parse_xyz(char, x, y, z):
+        if char == 'x':
+            return x
+        elif char == 'y':
+            return y
+        elif char == 'z':
+            return z
+
+    x1 = _parse_xyz(plane[0], x, y, z)
+    x2 = _parse_xyz(plane[1], x, y, z)
+
+    if (x1 is x and x2 is y) or (x1 is y and x2 is x):
+        x3 = z
+    elif (x1 is x and x2 is z) or (x1 is z and x2 is x):
+        x3 = y
+    elif (x1 is y and x2 is z) or (x1 is z and x2 is y):
+        x3 = x
+    else:
+        raise Exception(f"Plane {plane} is unrecognizable.")
+
+    return x1, x2, x3
+
+
+
+def _kdtree_interpolate(coords, grid_coords, k=1, eps=0, workers=1, **kwargs):
+
+    from scipy.spatial import KDTree
+
+    tree = KDTree(coords)  # build tree
+    d, i = tree.query(
+        grid_coords, k=1, eps=0.0, p=2, workers=1
+    )  # the most time-consuming step
+
+    return i

@@ -8,6 +8,8 @@ import numpy as np
 from numpy.typing import ArrayLike
 import unyt as u
 
+from richio.units import units
+
 # from richio.config import FIGURES_DIR, PROCESSED_DATA_DIR
 
 # import typer
@@ -41,10 +43,15 @@ def use_nice_style():
 class SnapshotPlotter:
     def __init__(self, snap):
         self.snap = snap
-        self.peek = self.scatter  # alias for peek
 
-    def scatter(self):
-        pass
+    def peek(self, data='density', **kwargs):
+        """
+        A quick peek at the data.
+        """
+        try:
+            return self.slice(data=data, res=512, x='X', y='Y', z='Z', plane='xy', slice_coord=0, **kwargs)
+        except FileNotFoundError:       # x, y, z are not found, do cmx, cmy, cmz (center of mass)
+            return self.slice(data=data, res=512, x='CMx', y='CMy', z='CMz', plane='xy', slice_coord=0, **kwargs)
 
     def slice(
         self, 
@@ -56,69 +63,31 @@ class SnapshotPlotter:
         plane: str = "xy",
         slice_coord: float | u.array.unyt_quantity | None = None,
         box_size: ArrayLike | None = None,
+        selection: ArrayLike | None = None,
         unit_system: str = "cgs",
         volume_selection: bool = True, # select based on volume to speed up calculation
         ax: Any | None = None,
         cmap: str | Colormap = "twilight",
+        label_latex: str = "\\rho",
+        unit_latex: str | None = None,
         **kwargs
     ):
         """
         Make a slice plot.
         """
-        # TODO: implement star_mask : put data to zero instead of removing them
-        # (which is bad if you use nn) and put them to the lowest color in
-        # colormap when plotting (something like set_bad...)
-
-        # Fetch data
-        data = self._get_data(data)
-        x = self._get_data(x)
-        y = self._get_data(y)
-        z = self._get_data(z)
-        if volume_selection:
-            volume = self._get_data('volume')
-
-        # Set resolution
-        try:
-            nx, ny = res[0], res[1]
-        except TypeError:
-            nx = ny = res
-
-        # Set boxsize
-        if box_size is None:
-            x0, y0, z0, x1, y1, z1 = self.snap.box  # Load the box size
-            x0, y0, z0 = _parse_plane(plane, x0, y0, z0)
-            x1, y1, z1 = _parse_plane(plane, x1, y1, z1)
-        else:
-            x0, y0, x1, y1= box_size
-        
-        # x_slice, y_slice, z_slice should only have one that is not None
-        x, y, z = _parse_plane(plane, x, y, z)      # redefine x y to be the plane, z the sliced direction
-
-        # Make Euclidean grid
-        xspace = np.linspace(x0, x1, nx, endpoint=False)
-        yspace = np.linspace(x0, y1, ny, endpoint=False)
-        zspace = slice_coord
-
-        if volume_selection:
-            mask = np.abs(z - slice_coord) < volume**(1/3)
-            # assuming spherical cells, V^(1/3)=(4pi/3)^(1/3)R ~ 1.6R, we don't
-            # include the factor such that if V is not round enough we won't
-            # lose too much accuracy
-            data = data[mask]
-            x = x[mask]
-            y = y[mask]
-            z = z[mask]
-
-        X, Y, Z = np.meshgrid(xspace, yspace, zspace, indexing="ij")
-
-        coords = np.stack([x, y, z], axis=-1)  # coordinates of the particles 
-        grid_coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the grid (query points)
-        grid_coords = np.squeeze(grid_coords)            # remove extra dimension (nx, ny, 1, 3) to (nx, ny, 3)
-
-        i = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
-
-        sliced_data = data[i]
-        sliced_data = sliced_data.in_base(unit_system)
+        sliced_data, xspace, yspace = self.snap.slice(
+            data=data, 
+            res=res, 
+            x=x,
+            y=y,
+            z=z,
+            plane=plane,
+            slice_coord=slice_coord,
+            box_size=box_size,
+            selection=selection,
+            unit_system=unit_system,
+            volume_selection=volume_selection,
+        )
 
         if ax is None:
             fig, ax = plt.subplots()
@@ -126,10 +95,13 @@ class SnapshotPlotter:
         # Plot
         xx, yy = np.meshgrid(xspace, yspace, indexing="ij")
         im = ax.pcolormesh(xx, yy, np.log10(sliced_data), cmap=cmap, **kwargs)
-        unit_latex = sliced_data.units.latex_repr
-        plt.colorbar(im, ax=ax, label=f"$\\log(\\rho/{unit_latex})$")   # TODO: allow for general plots
+        
+        if unit_latex is None:      # read the unit from data if not specified
+            unit_latex = sliced_data.units.latex_repr
+        
+        plt.colorbar(im, ax=ax, label=f"$\\log[{label_latex}/{unit_latex}]$")
 
-        return ax, sliced_data
+        return ax, im, sliced_data
 
 
         
@@ -143,118 +115,91 @@ class SnapshotPlotter:
         z: str | ArrayLike = "Z",
         box_size: ArrayLike | None = None,
         unit_system: str = "cgs",
+        selection: ArrayLike = None,
         ax: Any | None = None,
         cmap: str | Colormap = "twilight",
+        label_latex: str = "\\Sigma",       # TODO: make them automatic from data name
+        unit_latex: str | None = None,
         **kwargs,
     ):
         """
         Make a projection plot. To make use of the unit system, use either str
         keys or unyt_array data for `data`, `x`, `y`, `z`, `box_size`.
         """
-        # Fetch data
-        data = self._get_data(data)
-        x = self._get_data(x)
-        y = self._get_data(y)
-        z = self._get_data(z)
-
-        # Set boxsize
-        if box_size is None:
-            x0, y0, z0, x1, y1, z1 = self.snap.box  # Load the box size
-        else:
-            x0, y0, z0, x1, y1, z1 = box_size
-
-        # Set resolution
-        try:
-            nx, ny, nz = res[0], res[1], res[2]
-        except TypeError:
-            nx = ny = nz = res
-
-        # Make Euclidean grid
-        xspace = np.linspace(x0, x1, nx, endpoint=False)  # disable endpoints such that dz = (z1-z0)/res instead of (z1-z0)/(res-1)
-        yspace = np.linspace(y0, y1, ny, endpoint=False)
-        zspace = np.linspace(z0, z1, nz, endpoint=False)  # TODO: add an option to use np.geomspace
-
-        X, Y, Z = np.meshgrid(xspace, yspace, zspace, indexing="ij")
-
-        coords = np.stack([x, y, z], axis=-1)  # coordinates of the particles
-        grid_coords = np.stack([X, Y, Z], axis=-1)  # coordinates of the grid (query points)
-
-        i = _kdtree_interpolate(coords=coords, grid_coords=grid_coords)
-
-        grid_data = data[i]
-
-        dz = (z1 - z0) / nz
-        projected_data = np.sum(grid_data * dz, axis=-1).in_base(unit_system)
-
-        if ax is None:
-            fig, ax = plt.subplots()
-
-        # Plot
-        xx, yy = np.meshgrid(xspace, yspace, indexing="ij")
-        im = ax.pcolormesh(xx, yy, np.log10(projected_data), cmap=cmap, **kwargs)
-        unit_latex = projected_data.units.latex_repr
-        plt.colorbar(im, ax=ax, label=f"$\\log(\\Sigma/{unit_latex})$") # TODO: update for non-density cases
-
-        return ax, projected_data
-
-    def _get_data(
-        self, data: str | ArrayLike
-    ) -> u.unyt_array:  # TODO: add masking option that automatically mask floor gas
-        if isinstance(data, str):
-            key = data
-            data = self.snap[key]
-        elif isinstance(data, u.unyt_array):
-            pass
-        elif isinstance(data, np.ndarray):
-            data = data * u.Dimensionless
-            warnings.warn("No unit attached, assuming data is dimensionless.")
-        else:
-            raise TypeError(
-                f"Data type {type(data)} unsupported."
-                "Use either str, unyt.unyt_array, or numpy.ndarray."
+        projected_data, xspace, yspace = self.snap.project(
+            data=data,
+            res=res,
+            x=x,
+            y=y,
+            z=z,
+            box_size=box_size,
+            unit_system=unit_system,
+            selection=selection
             )
 
-        return data
+        ax, im = scalar_map(
+            f=projected_data,
+            xspace=xspace,
+            yspace=yspace,
+            ax=ax,
+            cmap=cmap,
+            label_latex=label_latex,
+            unit_latex=unit_latex,
+            **kwargs
+            )
+
+        return ax, im, projected_data
 
 
 
-def _parse_plane(plane, x, y, z):
+
+
+def scalar_map(f : u.unyt_array | ArrayLike, 
+                xspace : u.unyt_array | ArrayLike, 
+                yspace : u.unyt_array | ArrayLike,
+                ax: Any | None = None,
+                cmap: str | Colormap = "twilight",
+                label_latex: str = "\\Sigma",
+                unit_latex: str | None = None,
+                **kwargs):
     """
-    Parse a string input "xy" to data x, y, z; "yz" to y, z, x; "zx" to z, x, y,
-    etc, in order to specify the slicing plane.
+    A general visualisation for any scalar field data.
     """
+    
+    # ensure we have an Axes
+    if ax is None:
+        fig, ax = plt.subplots()
 
-    def _parse_xyz(char, x, y, z):
-        if char == 'x':
-            return x
-        elif char == 'y':
-            return y
-        elif char == 'z':
-            return z
+    # compute log-space data and choose sensible defaults for vmin/vmax
+    data_log = np.log10(f)
 
-    x1 = _parse_xyz(plane[0], x, y, z)
-    x2 = _parse_xyz(plane[1], x, y, z)
+    # copy kwargs so we can set defaults without mutating caller's dict
+    kw = kwargs.copy()
 
-    if (x1 is x and x2 is y) or (x1 is y and x2 is x):
-        x3 = z
-    elif (x1 is x and x2 is z) or (x1 is z and x2 is x):
-        x3 = y
-    elif (x1 is y and x2 is z) or (x1 is z and x2 is y):
-        x3 = x
+    # convert to ndarray for robust min/max computations
+    arr = np.asarray(data_log)
+    finite_mask = np.isfinite(arr)
+    if finite_mask.any():
+        dmin = float(np.min(arr[finite_mask]))
+        dmax = float(np.max(arr[finite_mask]))
+
+        # round to nearest half-integers outward
+        vmin_default = np.floor(dmin * 2.0) / 2.0
+        vmax_default = np.ceil(dmax * 2.0) / 2.0
+
+        if 'vmin' not in kw:
+            kw['vmin'] = vmin_default
+        if 'vmax' not in kw:
+            kw['vmax'] = vmax_default
     else:
-        raise Exception(f"Plane {plane} is unrecognizable.")
+        warnings.warn("No finite values found in data; leaving vmin/vmax to matplotlib defaults.")
 
-    return x1, x2, x3
+    xgrid, ygrid = np.meshgrid(xspace, yspace, indexing="ij")
+    im = ax.pcolormesh(xgrid, ygrid, data_log, cmap=cmap, **kw)  # return im as well in case you want to customise colorbar
 
+    if unit_latex is None:      # read the unit from data if not specified
+        unit_latex = f.units.latex_repr     #TODO: check dimensionality and raise warning
 
+    plt.colorbar(im, ax=ax, label=f"$\\log[{label_latex}/{unit_latex}]$")
 
-def _kdtree_interpolate(coords, grid_coords, k=1, eps=0, workers=1, **kwargs) -> np.ndaray(dtype=int):
-
-    from scipy.spatial import KDTree
-
-    tree = KDTree(coords)  # build tree
-    d, i = tree.query(
-        grid_coords, k=1, eps=0.0, p=2, workers=1
-    )  # the most time-consuming step
-
-    return i
+    return ax, im
