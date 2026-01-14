@@ -11,14 +11,14 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=24	# max 48 per node for gpu_strw
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=61G	# max 61G per node for gpu_strw (this is per node requrest)
+#SBATCH --mem=61G	# max 61G per node for gpu_strw (this is per node request)
 #SBATCH --mail-user="yujiehe@strw.leidenuniv.nl"
 #SBATCH --mail-type="ALL"
 
 echo "====== Date: $(date) ======"
 echo "====== Batch script: ======"
 cat "$0"
-echo "=========================="
+echo "==========================="
 echo ""
 
 # Load environment

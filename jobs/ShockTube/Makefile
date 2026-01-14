@@ -1,56 +1,109 @@
-# Global variables
-PL = 1
-DL = 1
-PR = 0.1
-DR = 0.125
+#################################################################################
+# GLOBALS                                                                       #
+#################################################################################
 
-RICH_PROBLEM = ShockTube
-LMOD_ENV = new_rich_build
+## ?= only sets if not yet been set
+## := set and fixed
+## = might change if doing smth like A=$B
 
-RICH_PATH = /home/hey4/RICH-fwrk
-DATA_PATH = /home/hey4/data/raw
-OUTPUT_PATH = $(DATA_PATH)/PL$(PL)PR$(PR)DL$(DL)DR$(DR)
+RICH_PROBLEM := ShockTube
+PL ?= 1
+DL ?= 1
+PR ?= 0.1
+DR ?= 0.125
 
-## note: $(@D) gives the path to the output file
-## $_ uses the same argument as the last command
-## && makes them run in one shell (make executes every line in a new shell)
-$(OUTPUT_PATH)/snap_%.h5 : snap_%.h5
-	mkdir -p $(@D) && cp snap_%.h5 $_ 
+LMOD_ENV := new_rich_build			# This will be called by module restore $(LMOD_ENV)
+RICH_PATH := /home/hey4/RICH-fwrk
+DATA_PATH := /home/hey4/rich_tde/data/raw/ShockTubeIdealGas
+OUTPUT_PATH := $(DATA_PATH)/PL$(PL)PR$(PR)DL$(DL)DR$(DR)
 
-snap_final.h5: run.sh $(RICH_PATH)/build/rich leftpressure.txt leftdensity.txt rightpressure.txt rightdensity.txt
-	./run.sh
+MPI ?= 0
 
-$(RICH_PATH)/build/rich: $(RICH_PATH)/runs/ShockTube/main.cpp build.sh
+ifeq ($(MPI),1)
+MPI_BUILD_SUFFIX := --mpi
+else
+MPI_BUILD_SUFFIX :=
+endif
+
+#################################################################################
+# MAIN                                                                          #
+#################################################################################
+
+.DEFAULT_GOAL := $(OUTPUT_PATH)/snap_final.h5
+
+ifeq ($(MPI),1)
+$(OUTPUT_PATH)/snap_final.h5: run_mpi.sh $(RICH_PATH)/build/rich $(OUTPUT_PATH)/leftpressure.txt $(OUTPUT_PATH)/leftdensity.txt $(OUTPUT_PATH)/rightpressure.txt $(OUTPUT_PATH)/rightdensity.txt
+	sbatch ./run_mpi.sh
+else
+$(OUTPUT_PATH)/snap_final.h5: run_serial.sh $(RICH_PATH)/build/rich $(OUTPUT_PATH)/leftpressure.txt $(OUTPUT_PATH)/leftdensity.txt $(OUTPUT_PATH)/rightpressure.txt $(OUTPUT_PATH)/rightdensity.txt
+	./run_serial.sh
+endif
+
+$(RICH_PATH)/build/rich: $(RICH_PATH)/runs/ShockTube/main.cpp build.sh .mpi_stamp_$(MPI)
 	./build.sh
 
-run.sh:
+ifeq ($(MPI),1)
+run_mpi.sh:
 	printf '%s\n' \
 		'#!/bin/bash -l' \
-		'module purge' \
-		'module restore $(LMOD_ENV)' \
+		'#SBATCH --partition=gpu_strw' \
+		'#SBATCH --account=gpu_strw' \
+		'#SBATCH --job-name=shocktubes' \
+		'#SBATCH --time=0-01:00:00 # max 7 days' \
+		'#SBATCH --output=/home/hey4/RICH/jobs/logs/%j_%x.out   # %x: Job name, %j: Job id' \
+		'#SBATCH --nodes=1' \
+		'#SBATCH --ntasks=12	# max 48 per node for gpu_strw' \
+		'#SBATCH --cpus-per-task=1' \
+		'#SBATCH --mem=61G	    # max 61G per node for gpu_strw' \
+		'#SBATCH --mail-user="yujiehe@strw.leidenuniv.nl"' \
+		'#SBATCH --mail-type="ALL"' \
+		'echo "Date: $$(date)"' \
+		'echo "Batch script:"' \
+		'cat "$$0"' \
+		'echo "==============================================="' \
+		'module purge && module restore $(LMOD_ENV)' \
+		'mkdir -p $(OUTPUT_PATH) && cd $(OUTPUT_PATH)' \
+		'srun $(RICH_PATH)/build/rich' \
+	> $@
+else
+run_serial.sh:
+	printf '%s\n' \
+		'#!/bin/bash -l' \
+		'module purge && module restore $(LMOD_ENV)' \
+		'mkdir -p $(OUTPUT_PATH) && cd $(OUTPUT_PATH)' \
 		'$(RICH_PATH)/build/rich' \
 	> $@
 	chmod +x $@
+endif
 
 build.sh:
 	printf '%s\n' \
 		'#!/bin/bash -l' \
 		'rm -r $(RICH_PATH)/build' \
-		'module purge' \
-		'module restore $(LMOD_ENV)' \
-		'$(RICH_PATH)/config.py --problem=$(RICH_PROBLEM)' \
+		'module purge && module restore $(LMOD_ENV)' \
+		'$(RICH_PATH)/config.py --problem=$(RICH_PROBLEM) $(MPI_BUILD_SUFFIX)' \
 		'$(MAKE) -C $(RICH_PATH)' \
 	> $@
 	chmod +x $@
 
-leftpressure.txt:
-	echo $(PL) > $@
+ifeq ($(MPI),1)
+.mpi_stamp_1:
+	rm -f .mpi_stamp_0
+	touch $@
+else
+.mpi_stamp_0:
+	rm -f .mpi_stamp_1
+	touch $@
+endif	
 
-leftdensity.txt:
-	echo $(DL) > $@
+$(OUTPUT_PATH)/leftpressure.txt:
+	mkdir -p $(@D) && echo $(PL) > $@
 
-rightpressure.txt:
-	echo $(PR) > $@
+$(OUTPUT_PATH)/leftdensity.txt:
+	mkdir -p $(@D) && echo $(DL) > $@
 
-rightdensity.txt:
-	echo $(DR) > $@
+$(OUTPUT_PATH)/rightpressure.txt:
+	mkdir -p $(@D) && echo $(PR) > $@
+
+$(OUTPUT_PATH)/rightdensity.txt:
+	mkdir -p $(@D) && echo $(DR) > $@
