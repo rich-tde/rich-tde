@@ -51,7 +51,7 @@ test:
 .PHONY: create_environment
 create_environment:
 	
-	conda create --name $(PROJECT_NAME) python=$(PYTHON_VERSION) -y
+	conda create --name $(PROJECT_NAME) --file environment.yml
 	
 	@echo ">>> conda env created. Activate with:\nconda activate $(PROJECT_NAME)"
 	
@@ -68,8 +68,6 @@ create_environment:
 data: requirements
 	$(PYTHON_INTERPRETER) richio/dataset.py
 
-## Run RICH
-.PHONY:
 
 #################################################################################
 # Self Documenting Commands                                                     #
