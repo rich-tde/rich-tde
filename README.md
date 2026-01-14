@@ -17,11 +17,3 @@ and one can import by
 ```
 import richio
 ```
-
-
-
-## Publications with RICH
-
-Steinberg E, Stone NC. 2024. Nature. 625(7995):463–67
-
-Yalinewich A, Steinberg E, Sari R. 2015. The Astrophysical Journal Supplement Series. 216(2):35
