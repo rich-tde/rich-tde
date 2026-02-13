@@ -132,14 +132,15 @@ def P_hugoniot(rho, P_ref, rho_ref, gamma=5/3): # uses rho2, P2 as reference poi
 def P_rayleigh(v, v1, v2, P1, P2):
     return P1 + (P2 - P1) * (v - v1) / (v2 - v1)
 
-def dp2s(rho, p, gamma=5/3):
+def dp2s(rho, p):
     """
     Using the Sackur-Tetrode equation to calculate specific entropy of a
     ideal gas, given pressure and density.
 
     Note: the Sackur-Tetrode equation as written here is only for 5/3 idea
-    gas...
+    gas!
     """
+    gamma = 5/3
     sie = p / (rho * (gamma - 1)) # specific internal energy
     s = u.kb / u.mh * (
         np.log(u.mh / rho * ((4*np.pi*u.mh**2*sie)/(3*u.h**2))**(3/2)) + 5/2
@@ -152,9 +153,44 @@ def delta(M, gamma=5/3):
     return delta
 
 def R2M(R, gamma=5/3):
-    """Mach number from compression ratio rho2/rho1."""
+    """
+    Mach number from compression ratio rho2/rho1, using the RH condition.
+    """
     return 1/np.sqrt((gamma + 1)/(2*R) - (gamma - 1)/2)
+# Alias
+rho2rho1M = R2M
 
 def M2R(M, gamma=5/3):
-    """Compression ratio rho2/rho1 from Mach number."""
-    return (gamma + 1)*M**2 / ((gamma - 1)*M**2 + 2)
+    """
+    Compression ratio rho2/rho1 from Mach number, using the RH condition.
+    """
+    rho2rho1 = (gamma + 1)*M**2 / ((gamma - 1)*M**2 + 2)
+    return rho2rho1
+# Alias
+Mrho2rho1 = M2R
+
+def MT2T1(M, gamma=5/3):
+    """
+    Temperature jump ratio T2/T1 from Mach number, using the RH condition.
+    """
+    T2T1 = (2*gamma*M**2 - (gamma - 1)) * ((gamma - 1)*M**2 + 2) / ((gamma + 1)**2 * M**2)
+    return T2T1
+
+def MP2P1(M, gamma=5/3):
+    """
+    Pressure jump ratio P2/P1 from Mach number, using the RH condition.
+    """
+    P2P1 = (2*gamma*M**2)/(gamma + 1) - (gamma - 1)/(gamma + 1)
+    return P2P1
+
+def T2T1M(T2_T1, gamma):
+    """ Find mach number from the temperature jump (T2_T1). """
+    a = 2 * gamma * (gamma - 1)
+    minusb = gamma * 2 - 6 * gamma + T2_T1 * (gamma + 1)**2 + 1
+    M2 = (minusb + np.sqrt(minusb**2 + 8 * a * (gamma - 1))) / (2 * a)
+    return np.sqrt(M2)
+
+def P2P1M(P2_P1, gamma):
+    """ Find mach number from the pressure jump (P2_P1). """
+    M2 = (P2_P1 * (gamma + 1) + gamma - 1) / (2 * gamma)
+    return np.sqrt(M2)
